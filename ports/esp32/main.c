@@ -73,6 +73,10 @@
 #include "modespnow.h"
 #endif
 
+#if MICROPY_PY_MACHINE_CAN
+#include "extmod/machine_can.h"
+#endif
+
 // MicroPython runs as a task under FreeRTOS
 #define MP_TASK_PRIORITY        (ESP_TASK_PRIO_MIN + 1)
 
@@ -219,6 +223,9 @@ soft_reset_exit:
     // deinitialise peripherals
     #if MICROPY_PY_MACHINE_PWM
     machine_pwm_deinit_all();
+    #endif
+    #if MICROPY_PY_MACHINE_CAN
+    machine_can_deinit_all();
     #endif
     // TODO: machine_rmt_deinit_all();
     machine_pins_deinit();
