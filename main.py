@@ -9,6 +9,21 @@ except ImportError:
     CAN = None
 
 
+class CANAdapter:
+    """Wraps esp32.CAN to provide a unified send(id, data)/recv()->(id, data) API."""
+    def __init__(self, raw_can):
+        self._can = raw_can
+    def send(self, can_id, data):
+        self._can.send(data, can_id)
+    def recv(self):
+        if self._can.any():
+            msg = self._can.recv()
+            return (int(msg[0]), bytes(msg[3]))
+        return None
+    def state(self):
+        return self._can.state()
+
+
 def load_user_program():
     """Import user_program.py, return (setup_fn, loop_fn)."""
     try:
@@ -33,7 +48,8 @@ def run():
 
     # Initialize CAN
     print("[MAIN] Initializing CAN at 250kbps...")
-    can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
+    raw_can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
+    can = CANAdapter(raw_can)
     print("[MAIN] CAN state:", can.state())
 
     # Phase 1-6: Firmware init
