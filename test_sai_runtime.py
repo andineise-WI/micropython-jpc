@@ -52,6 +52,33 @@ def test_recv_any_returns_none_on_timeout():
     assert result is None
 
 
+# === Task 2: SDO functions ===
+
+def test_sdo_upload_u32():
+    can = MockCAN()
+    can._queue.append((0x581, bytes([0x43, 0x18, 0x10, 0x02, 0x06, 0x00, 0x01, 0x00])))
+    result = sai_runtime.sdo_upload_u32(can, 1, 0x1018, 0x02)
+    assert result == 0x00010006
+    assert len(can._sent) == 1
+    assert can._sent[0][0] == 0x601
+
+def test_sdo_upload_u32_timeout():
+    can = MockCAN()
+    result = sai_runtime.sdo_upload_u32(can, 1, 0x1018, 0x02, timeout_ms=50)
+    assert result is None
+
+def test_sdo_download_1byte():
+    can = MockCAN()
+    can._queue.append((0x581, bytes([0x60, 0x00, 0x20, 0x00, 0x00, 0x00, 0x00, 0x00])))
+    ok = sai_runtime.sdo_download_1byte(can, 1, 0x2000, 0x00, 0x00)
+    assert ok is True
+
+def test_sdo_download_1byte_timeout():
+    can = MockCAN()
+    ok = sai_runtime.sdo_download_1byte(can, 1, 0x2000, 0x00, 0x00, timeout_ms=50)
+    assert ok is False
+
+
 passed = 0
 failed = 0
 
@@ -70,6 +97,10 @@ if __name__ == '__main__':
     print("=== sai_runtime tests ===")
     run_test(test_recv_any_returns_message)
     run_test(test_recv_any_returns_none_on_timeout)
+    run_test(test_sdo_upload_u32)
+    run_test(test_sdo_upload_u32_timeout)
+    run_test(test_sdo_download_1byte)
+    run_test(test_sdo_download_1byte_timeout)
     print("\n{} passed, {} failed".format(passed, failed))
     if failed:
         sys.exit(1)

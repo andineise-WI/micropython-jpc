@@ -64,3 +64,42 @@ def recv_any(can, timeout_ms=100):
             return msg
         time.sleep_ms(1)
     return None
+
+
+def send_nmt(can, command, node_id=0):
+    """Send NMT command."""
+    can.send(NMT_ID, bytes([command & 0xFF, node_id & 0xFF]))
+
+
+def sdo_upload_u32(can, node_id, index, subindex, timeout_ms=500):
+    """Read a 32-bit value via SDO expedited upload. Returns int or None."""
+    req_id = 0x600 + node_id
+    resp_id = 0x580 + node_id
+    req = bytes([0x40, index & 0xFF, (index >> 8) & 0xFF, subindex, 0, 0, 0, 0])
+    can.send(req_id, req)
+    deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        msg = can.recv()
+        if msg is not None and msg[0] == resp_id:
+            data = bytes(msg[1])
+            if len(data) >= 8 and data[0] == 0x43:
+                return data[4] | (data[5] << 8) | (data[6] << 16) | (data[7] << 24)
+            return None
+        time.sleep_ms(1)
+    return None
+
+
+def sdo_download_1byte(can, node_id, index, subindex, value, timeout_ms=500):
+    """Write a 1-byte value via SDO expedited download. Returns True on ACK."""
+    req_id = 0x600 + node_id
+    resp_id = 0x580 + node_id
+    req = bytes([0x2F, index & 0xFF, (index >> 8) & 0xFF, subindex, value & 0xFF, 0, 0, 0])
+    can.send(req_id, req)
+    deadline = time.ticks_add(time.ticks_ms(), timeout_ms)
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        msg = can.recv()
+        if msg is not None and msg[0] == resp_id:
+            data = bytes(msg[1])
+            return len(data) >= 1 and data[0] == 0x60
+        time.sleep_ms(1)
+    return False
