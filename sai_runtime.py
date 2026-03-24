@@ -3,12 +3,9 @@
 import time
 
 try:
-    from esp32 import CAN
+    from machine import CAN
 except ImportError:
-    try:
-        from machine import CAN
-    except ImportError:
-        CAN = None  # Desktop testing
+    CAN = None  # Desktop testing
 
 # Protocol constants
 BOOTLOADER_TX = 0x7FE

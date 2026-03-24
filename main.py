@@ -4,12 +4,9 @@ import time
 import sai_runtime
 
 try:
-    from esp32 import CAN
+    from machine import CAN
 except ImportError:
-    try:
-        from machine import CAN
-    except ImportError:
-        CAN = None
+    CAN = None
 
 
 def load_user_program():
@@ -36,7 +33,7 @@ def run():
 
     # Initialize CAN
     print("[MAIN] Initializing CAN at 250kbps...")
-    can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
+    can = CAN(1, bitrate=250000)
     print("[MAIN] CAN state:", can.state())
 
     # Phase 1-6: Firmware init
