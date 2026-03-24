@@ -57,8 +57,8 @@ Power ON
            Jedes SAI-Modul sendet nach Reset eine Bootup-Nachricht auf 0x7FF.
            Firmware wartet bis 1000ms Silence, dann gilt Addressing als abgeschlossen.
            Reihenfolge der Bootups bestimmt Node-ID-Zuweisung (erstes Bootup = Node 1).
-           → Adresse vergeben (0x7FE[0x01 nid])
-           → Switch-on (0x7FE[0x02 nid])
+           → Adresse vergeben (0x7FE[0x81 nid])
+           → Switch-on (0x7FE[0x82 nid])
            → 1s warten auf weitere Bootups, dann App-Start
   Phase 2: App-Start Broadcast: 0x77F[0x7F] (alle Module)
            + pro Modul: 0x7FE[0x83 nid] (Unicast mit nid im Datenbyte)
@@ -157,7 +157,7 @@ def loop():
 | PDO Output AO | 0x201+nid | 8 Bytes: 4× 16-bit unsigned (Little-Endian) |
 
 > **PDO-Dekodierung:** Gleiche COB-ID-Familie (0x181+nid), aber unterschiedliche Nutzdatenlängen je nach Typ. Die Firmware kennt den Typ jedes Knotens aus Phase 4 (Identity-Query) und dekodiert den PDO-Inhalt anhand des gespeicherten Modul-Typs – nicht anhand der CAN-ID allein.
-| Switch-on | 0x7FE[0x02 nid] | Bootloader: Modul auf Ziel-Node-ID schalten |
+| Switch-on | 0x7FE[0x82 nid] | Bootloader: Modul auf Ziel-Node-ID schalten |
 
 ---
 
