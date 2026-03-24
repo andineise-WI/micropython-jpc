@@ -79,6 +79,31 @@ def test_sdo_download_1byte_timeout():
     assert ok is False
 
 
+# === Task 3: Addressing ===
+
+def test_addressing_two_modules():
+    can = MockCAN()
+    can._queue.extend([
+        (0x7FF, b'\x01'),  # Module 1 bootup
+        (0x7FF, b'\x81'),  # Module 1 addr ACK
+        (0x7FF, b'\x82'),  # Module 1 switch ACK
+        (0x7FF, b'\x01'),  # Module 2 bootup
+        (0x7FF, b'\x81'),  # Module 2 addr ACK
+        (0x7FF, b'\x82'),  # Module 2 switch ACK
+    ])
+    modules = sai_runtime.run_addressing(can, timeout_s=0.1)
+    assert modules == [1, 2]
+    sent_ids = [s[0] for s in can._sent]
+    assert 0x000 in sent_ids
+    assert 0x77F in sent_ids
+    assert 0x7FE in sent_ids
+
+def test_addressing_no_modules():
+    can = MockCAN()
+    modules = sai_runtime.run_addressing(can, timeout_s=0.1)
+    assert modules == []
+
+
 passed = 0
 failed = 0
 
@@ -101,6 +126,8 @@ if __name__ == '__main__':
     run_test(test_sdo_upload_u32_timeout)
     run_test(test_sdo_download_1byte)
     run_test(test_sdo_download_1byte_timeout)
+    run_test(test_addressing_two_modules)
+    run_test(test_addressing_no_modules)
     print("\n{} passed, {} failed".format(passed, failed))
     if failed:
         sys.exit(1)

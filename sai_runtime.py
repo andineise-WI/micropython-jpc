@@ -103,3 +103,80 @@ def sdo_download_1byte(can, node_id, index, subindex, value, timeout_ms=500):
             return len(data) >= 1 and data[0] == 0x60
         time.sleep_ms(1)
     return False
+
+
+def run_addressing(can, timeout_s=1.0):
+    """Phase 1+2: Auto-address SAI modules and start applications.
+    
+    Returns list of assigned node IDs [1, 2, ...].
+    """
+    print("[ADDR] Phase 1: NMT Reset...")
+    send_nmt(can, 0x81, 0x00)
+    time.sleep_ms(500)
+    
+    addr_step = 0
+    module_count = 1
+    modules = []
+    last_activity = time.ticks_ms()
+    timeout_ms = int(timeout_s * 1000)
+    
+    while True:
+        msg = can.recv()
+        if msg is not None:
+            msg_id = msg[0]
+            data = bytes(msg[1])
+            
+            if addr_step == 0:
+                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
+                    print("[ADDR] Bootup from module #{}".format(module_count))
+                    addr_step = 1
+            
+            if addr_step == 1:
+                can.send(BOOTLOADER_TX, bytes([0x81, module_count]))
+                addr_step = 2
+                continue
+            
+            if addr_step == 2:
+                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x81:
+                    addr_step = 3
+            
+            if addr_step == 3:
+                can.send(BOOTLOADER_TX, bytes([0x82, module_count]))
+                addr_step = 4
+                continue
+            
+            if addr_step == 4:
+                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x82:
+                    modules.append(module_count)
+                    module_count += 1
+                    last_activity = time.ticks_ms()
+                    addr_step = 5
+            
+            if addr_step == 5:
+                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
+                    addr_step = 1
+                    can.send(BOOTLOADER_TX, bytes([0x81, module_count]))
+                    addr_step = 2
+                    continue
+        else:
+            time.sleep_ms(1)
+        
+        # Timeout: no more modules
+        if addr_step == 5 and time.ticks_diff(time.ticks_ms(), last_activity) > timeout_ms:
+            break
+        if addr_step == 0 and time.ticks_diff(time.ticks_ms(), last_activity) > timeout_ms:
+            break
+    
+    # Phase 2: App-Start
+    if modules:
+        print("[ADDR] Phase 2: Starting {} module(s)...".format(len(modules)))
+        can.send(APP_START_BROADCAST, bytes([0x7F]))
+        time.sleep_ms(10)
+        for nid in modules:
+            can.send(BOOTLOADER_TX, bytes([0x83, nid]))
+            time.sleep_ms(10)
+        can.send(APP_START_BROADCAST, bytes([0x7F]))
+        time.sleep_ms(500)
+    
+    print("[ADDR] Complete: {} modules -> {}".format(len(modules), modules))
+    return modules
