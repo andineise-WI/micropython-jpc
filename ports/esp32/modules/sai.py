@@ -77,7 +77,7 @@ class SAIBus:
 
     def _send(self, can_id, data):
         """Send a CAN message and wait briefly."""
-        self._can.send(id=can_id, data=bytes(data))
+        self._can.send(can_id, bytes(data))
         time.sleep(_CAN_SEND_DELAY)
 
     def _recv(self, timeout_ms=100):
@@ -109,11 +109,25 @@ class SAIBus:
         self._modules = []
         node_id = 1
 
+        # Force all modules to reboot into bootloader.
+        # This handles the case where ESP32 boots simultaneously with
+        # the modules and misses the initial boot announcement.
+        self._send(_NMT_ID, [_NMT_RESET_NODE, 0x00])
+        time.sleep(0.5)
+
+        # Drain any stale messages from before reset
+        while self._can.recv() is not None:
+            pass
+
         # Wait for first module bootup
         msg = self._recv_id(_BOOTLOADER_RX, timeout_ms=3000)
         if msg is None or msg[1][0] != 0x01:
-            print("SAI: No modules found")
-            return
+            # Boot announce missed — try address assignment anyway,
+            # module may already be waiting in bootloader
+            print("SAI: No boot announce, trying blind addressing...")
+            time.sleep(0.2)
+        else:
+            print("SAI: Boot announce received")
 
         while True:
             # Assign address
