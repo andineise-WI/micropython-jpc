@@ -54,6 +54,9 @@ Das System besteht aus zwei klar getrennten Schichten:
 ```
 Power ON
   Phase 1: NMT Reset (0x000[0x81 0x00]) → Bootup-Nachrichten empfangen (0x7FF)
+           Jedes SAI-Modul sendet nach Reset eine Bootup-Nachricht auf 0x7FF.
+           Firmware wartet bis 1000ms Silence, dann gilt Addressing als abgeschlossen.
+           Reihenfolge der Bootups bestimmt Node-ID-Zuweisung (erstes Bootup = Node 1).
            → Adresse vergeben (0x7FE[0x01 nid])
            → Switch-on (0x7FE[0x02 nid])
            → 1s warten auf weitere Bootups, dann App-Start
@@ -147,11 +150,13 @@ def loop():
 | Heartbeat | 0x700+nid | Modul-Erkennung |
 | SDO | 0x600+nid (TX), 0x580+nid (RX) | Identity + Parametrierung |
 | NMT | 0x000 | Operational Start |
-| PDO Input DI/DIO | 0x181+nid | 8 Digital-Eingänge als 1 Byte |
-| PDO Input AI | 0x181+nid | 4 Analog-Werte als 4x 16-bit |
-| PDO Input CNT | 0x181+nid | 2 Counter als 2x 32-bit |
-| PDO Output DO/DIO | 0x201+nid | 8 Digital-Ausgänge als 1 Byte |
-| PDO Output AO | 0x201+nid | 4 Analog-Werte als 4x 16-bit |
+| PDO Input DI/DIO | 0x181+nid | 1 Byte: 8 Digital-Eingänge als Bitfeld |
+| PDO Input AI | 0x181+nid | 8 Bytes: 4× 16-bit unsigned (Little-Endian) |
+| PDO Input CNT | 0x181+nid | 8 Bytes: 2× 32-bit unsigned (Little-Endian) |
+| PDO Output DO/DIO | 0x201+nid | 1 Byte: 8 Digital-Ausgänge als Bitfeld |
+| PDO Output AO | 0x201+nid | 8 Bytes: 4× 16-bit unsigned (Little-Endian) |
+
+> **PDO-Dekodierung:** Gleiche COB-ID-Familie (0x181+nid), aber unterschiedliche Nutzdatenlängen je nach Typ. Die Firmware kennt den Typ jedes Knotens aus Phase 4 (Identity-Query) und dekodiert den PDO-Inhalt anhand des gespeicherten Modul-Typs – nicht anhand der CAN-ID allein.
 | Switch-on | 0x7FE[0x02 nid] | Bootloader: Modul auf Ziel-Node-ID schalten |
 
 ---
@@ -166,6 +171,13 @@ Node-IDs werden beim Addressing ab 1 aufsteigend vergeben (max. 127 per CANopen-
 | SAI-8DI | 0x01 | 0x00010006 | `digital_in[]` | 8 | `True`/`False` |
 | SAI-8DO | 0x05 | 0x0001000A | `digital_out[]` | 8 | `True`/`False` |
 | SAI-8DIO | 0x02 | 0x00010007 | `digital_in[]` + `digital_out[]` | 8+8 | `True`/`False` |
+
+**DIO-Mapping-Beispiel** (Szenario: Node1=8DI, Node2=8DI, Node3=8DIO, Node4=8DO):
+- `digital_in[1..8]` ← Node1 (8DI)
+- `digital_in[9..16]` ← Node2 (8DI)
+- `digital_in[17..24]` ← Node3 (8DIO Eingänge)
+- `digital_out[1..8]` ← Node3 (8DIO Ausgänge) ← DIO zählt **separat** in jeder Typen-Liste
+- `digital_out[9..16]` ← Node4 (8DO)
 | SAI-4AI | 0x03 | 0x00010008 | `analog_in[]` | 4 | `int` 0–65535 (raw 16-bit) |
 | SAI-4AO | 0x04 | 0x00010009 | `analog_out[]` | 4 | `int` 0–65535 (raw 16-bit) |
 | SAI-CNT | 0x06 | 0x0001000B | `counter[]` | 2 | `int` 0–4294967295 (32-bit) |
@@ -206,6 +218,7 @@ Node-IDs werden beim Addressing ab 1 aufsteigend vergeben (max. 127 per CANopen-
 | Phase | Timeout | Verhalten bei Überschreitung |
 |---|---|---|
 | Phase 1 – Bootup warten | 1000ms ohne neue Bootup-Nachricht | Addressing abgeschlossen, weiter mit Phase 2 |
+| Phase 2 – App-Start warten | 500ms | Weiter mit Phase 3 (Module die nicht antworten erscheinen nicht in Heartbeats) |
 | Phase 3 – Heartbeat-Listen | 1000ms | Module die nicht antworten werden mit Kanälen=0 gemappt |
 | Phase 4 – SDO Identity | 500ms pro Modul | Modul überspringen, Kanäle=0 |
 | Phase 5 – SDO Write | 500ms pro Write | Fehler loggen (Serial), weiter |
@@ -228,8 +241,15 @@ digital_in = [None] + [False] * n_channels  # Index 1..n gültig
 ### Initialzustand
 Vor `setup()`: alle `digital_out[]` = `False`, alle `analog_out[]` = `0`. Outputs werden erst nach dem ersten `loop()`-Aufruf auf den CAN-Bus geschrieben.
 
-### Exception-Handling in loop()
+### Exception-Handling in setup() und loop()
 ```python
+try:
+    user_program.setup()
+except Exception as e:
+    print("USER SETUP ERROR:", e)  # Serial-Ausgabe
+    # setup() wird nicht wiederholt, Loop startet trotzdem
+
+# Im Scan-Loop:
 try:
     user_program.loop()
 except Exception as e:
