@@ -49,11 +49,12 @@ def run():
     # Initialize CAN
     print("[MAIN] Initializing CAN at 250kbps...")
     try:
-        # Deinit leftover driver from previous soft-reboot
-        CAN(0).deinit()
-    except:
-        pass
-    raw_can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
+        raw_can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
+    except OSError:
+        # TWAI driver still active from previous soft-reboot -> hard reset
+        import machine as _machine
+        print("[MAIN] CAN driver busy, hard reset...")
+        _machine.reset()
     can = CANAdapter(raw_can)
     print("[MAIN] CAN state:", can.state())
 
