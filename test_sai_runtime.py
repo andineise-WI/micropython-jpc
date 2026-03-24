@@ -198,6 +198,78 @@ def test_write_outputs_sends_pdo():
     assert can._sent[0][1][0] == 0xFF
 
 
+# --- Task 10: Edge case tests ---
+
+def test_build_io_map_with_counter():
+    """Counter module: 2 channels, 32-bit."""
+    detected = [{"node_id": 1, "profile": sai_runtime.MODULE_PROFILES[(6, 0x0001000B)]}]
+    sai_runtime.build_io_map(detected)
+    assert len(sai_runtime.counter) == 3  # [None, 0, 0]
+
+def test_build_io_map_with_analog():
+    """4AI + 4AO."""
+    detected = [
+        {"node_id": 1, "profile": sai_runtime.MODULE_PROFILES[(3, 0x00010008)]},
+        {"node_id": 2, "profile": sai_runtime.MODULE_PROFILES[(4, 0x00010009)]},
+    ]
+    sai_runtime.build_io_map(detected)
+    assert len(sai_runtime.analog_in) == 5   # [None] + 4
+    assert len(sai_runtime.analog_out) == 5  # [None] + 4
+
+def test_decode_pdo_analog_in():
+    """Decode 4AI PDO: 4x 16-bit little-endian."""
+    sai_runtime.analog_in[:] = [None] + [0] * 4
+    io_map = {"analog_in": [(1, 1, 4)], "digital_in": [], "counter": []}
+    # Values: 1000, 2000, 3000, 4000
+    data = bytes([0xE8, 0x03, 0xD0, 0x07, 0xB8, 0x0B, 0xA0, 0x0F])
+    sai_runtime.decode_pdo(0x181, data, io_map)
+    assert sai_runtime.analog_in[1] == 1000
+    assert sai_runtime.analog_in[4] == 4000
+
+def test_decode_pdo_counter():
+    """Decode CNT PDO: 2x 32-bit little-endian."""
+    sai_runtime.counter[:] = [None] + [0] * 2
+    io_map = {"counter": [(1, 1, 2)], "digital_in": [], "analog_in": []}
+    # Values: 100000, 200000
+    data = bytes([0xA0, 0x86, 0x01, 0x00, 0x40, 0x0D, 0x03, 0x00])
+    sai_runtime.decode_pdo(0x181, data, io_map)
+    assert sai_runtime.counter[1] == 100000
+    assert sai_runtime.counter[2] == 200000
+
+def test_encode_pdo_analog_out():
+    """Encode 4AO output: 4x 16-bit little-endian."""
+    sai_runtime.analog_out[:] = [None, 1000, 2000, 3000, 4000]
+    io_map = {"analog_out": [(1, 1, 4)], "digital_out": []}
+    frames = sai_runtime.encode_output_pdos(io_map)
+    assert len(frames) == 1
+    assert frames[0][0] == 0x201
+    assert frames[0][1] == bytes([0xE8, 0x03, 0xD0, 0x07, 0xB8, 0x0B, 0xA0, 0x0F])
+
+def test_unknown_module_skipped():
+    """Unknown module gets profile=None, no crash."""
+    detected = [{"node_id": 1, "profile": None, "product_code": 0xFF, "revision": 0xFF}]
+    io_map = sai_runtime.build_io_map(detected)
+    assert len(sai_runtime.digital_in) == 1  # only [None]
+
+def test_dio_integration():
+    """DIO module: contributes to both digital_in[] and digital_out[].
+    Scenario: Node1=8DI, Node2=8DI, Node3=8DIO, Node4=8DO."""
+    detected = [
+        {"node_id": 1, "profile": sai_runtime.MODULE_PROFILES[(1, 0x00010006)]},
+        {"node_id": 2, "profile": sai_runtime.MODULE_PROFILES[(1, 0x00010006)]},
+        {"node_id": 3, "profile": sai_runtime.MODULE_PROFILES[(2, 0x00010007)]},
+        {"node_id": 4, "profile": sai_runtime.MODULE_PROFILES[(5, 0x0001000A)]},
+    ]
+    io_map = sai_runtime.build_io_map(detected)
+    # digital_in: 8 (node1) + 8 (node2) + 8 (node3 DIO inputs) = 24
+    assert len(sai_runtime.digital_in) == 25  # [None] + 24
+    # digital_out: 8 (node3 DIO outputs) + 8 (node4) = 16
+    assert len(sai_runtime.digital_out) == 17  # [None] + 16
+    # Verify mappings
+    assert io_map["digital_in"] == [(1, 1, 8), (2, 9, 8), (3, 17, 8)]
+    assert io_map["digital_out"] == [(3, 1, 8), (4, 9, 8)]
+
+
 passed = 0
 failed = 0
 
@@ -230,6 +302,13 @@ if __name__ == '__main__':
     run_test(test_encode_pdo_digital_out)
     run_test(test_read_inputs_decodes_pdo)
     run_test(test_write_outputs_sends_pdo)
+    run_test(test_build_io_map_with_counter)
+    run_test(test_build_io_map_with_analog)
+    run_test(test_decode_pdo_analog_in)
+    run_test(test_decode_pdo_counter)
+    run_test(test_encode_pdo_analog_out)
+    run_test(test_unknown_module_skipped)
+    run_test(test_dio_integration)
     print("\n{} passed, {} failed".format(passed, failed))
     if failed:
         sys.exit(1)
