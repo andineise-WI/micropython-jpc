@@ -180,3 +180,217 @@ def run_addressing(can, timeout_s=1.0):
     
     print("[ADDR] Complete: {} modules -> {}".format(len(modules), modules))
     return modules
+
+
+def detect_modules(can, node_ids, heartbeat_timeout_ms=1000):
+    """Phase 3+4: Listen for heartbeats, query identity via SDO.
+    
+    Returns list of dicts: [{"node_id": N, "profile": {...}, ...}, ...]
+    """
+    print("[DETECT] Phase 3: Listening for heartbeats...")
+    alive_nodes = set()
+    deadline = time.ticks_add(time.ticks_ms(), heartbeat_timeout_ms)
+    while time.ticks_diff(deadline, time.ticks_ms()) > 0:
+        msg = can.recv()
+        if msg is not None:
+            msg_id = msg[0]
+            for nid in node_ids:
+                if msg_id == 0x700 + nid:
+                    alive_nodes.add(nid)
+        else:
+            time.sleep_ms(1)
+        if len(alive_nodes) == len(node_ids):
+            break
+    
+    print("[DETECT] Alive: {} of {}".format(len(alive_nodes), len(node_ids)))
+    
+    print("[DETECT] Phase 4: Identity query...")
+    detected = []
+    for nid in sorted(node_ids):
+        product_code = sdo_upload_u32(can, nid, 0x1018, 0x02) if nid in alive_nodes else None
+        revision = sdo_upload_u32(can, nid, 0x1018, 0x03) if nid in alive_nodes else None
+        
+        profile = MODULE_PROFILES.get((product_code, revision))
+        name = profile["name"] if profile else "UNKNOWN"
+        print("[DETECT] Node {}: {}".format(nid, name))
+        
+        detected.append({
+            "node_id": nid,
+            "profile": profile,
+            "product_code": product_code,
+            "revision": revision,
+        })
+    
+    return detected
+
+
+def parametrize_modules(can, detected):
+    """Phase 5: Apply SDO parameter writes per module profile. Send NMT Operational."""
+    print("[PARAM] Phase 5: Parametrizing modules...")
+    all_ok = True
+    for mod in detected:
+        profile = mod.get("profile")
+        if profile is None:
+            continue
+        nid = mod["node_id"]
+        print("[PARAM] Node {}: {}".format(nid, profile["name"]))
+        for index, subindex, value in profile["writes"]:
+            ok = sdo_download_1byte(can, nid, index, subindex, value)
+            if not ok:
+                print("[PARAM] WARN: Node {} write 0x{:04X}:0x{:02X} failed".format(nid, index, subindex))
+                all_ok = False
+    
+    print("[PARAM] NMT Operational...")
+    send_nmt(can, 0x01, 0x00)
+    time.sleep_ms(100)
+    return all_ok
+
+
+def build_io_map(detected):
+    """Phase 6: Build flat I/O arrays from detected modules, sorted by node ID.
+    
+    Populates module-level digital_in, digital_out, analog_in, analog_out, counter.
+    Returns io_map dict mapping each array to list of (node_id, start_index, channels).
+    """
+    global digital_in, digital_out, analog_in, analog_out, counter
+    
+    io_map = {
+        "digital_in": [],
+        "digital_out": [],
+        "analog_in": [],
+        "analog_out": [],
+        "counter": [],
+    }
+    
+    di_count = 0
+    do_count = 0
+    ai_count = 0
+    ao_count = 0
+    cnt_count = 0
+    
+    for mod in sorted(detected, key=lambda m: m["node_id"]):
+        profile = mod.get("profile")
+        if profile is None:
+            continue
+        nid = mod["node_id"]
+        io_type = profile.get("io_type", "")
+        
+        if io_type == "digital_in":
+            ch = profile["channels"]
+            io_map["digital_in"].append((nid, di_count + 1, ch))
+            di_count += ch
+        elif io_type == "digital_out":
+            ch = profile["channels"]
+            io_map["digital_out"].append((nid, do_count + 1, ch))
+            do_count += ch
+        elif io_type == "digital_io":
+            ch_in = profile["channels_in"]
+            ch_out = profile["channels_out"]
+            io_map["digital_in"].append((nid, di_count + 1, ch_in))
+            di_count += ch_in
+            io_map["digital_out"].append((nid, do_count + 1, ch_out))
+            do_count += ch_out
+        elif io_type == "analog_in":
+            ch = profile["channels"]
+            io_map["analog_in"].append((nid, ai_count + 1, ch))
+            ai_count += ch
+        elif io_type == "analog_out":
+            ch = profile["channels"]
+            io_map["analog_out"].append((nid, ao_count + 1, ch))
+            ao_count += ch
+        elif io_type == "counter":
+            ch = profile["channels"]
+            io_map["counter"].append((nid, cnt_count + 1, ch))
+            cnt_count += ch
+    
+    digital_in[:] = [None] + [False] * di_count
+    digital_out[:] = [None] + [False] * do_count
+    analog_in[:] = [None] + [0] * ai_count
+    analog_out[:] = [None] + [0] * ao_count
+    counter[:] = [None] + [0] * cnt_count
+    
+    print("[IO] Built: DI={} DO={} AI={} AO={} CNT={}".format(
+        di_count, do_count, ai_count, ao_count, cnt_count))
+    
+    return io_map
+
+
+def decode_pdo(msg_id, data, io_map):
+    """Decode incoming PDO and update I/O arrays in-place."""
+    nid = msg_id - 0x180
+    
+    for node_id, start, channels in io_map.get("digital_in", []):
+        if node_id == nid and len(data) >= 1:
+            byte_val = data[0]
+            for bit in range(channels):
+                digital_in[start + bit] = bool(byte_val & (1 << bit))
+            return
+    
+    for node_id, start, channels in io_map.get("analog_in", []):
+        if node_id == nid and len(data) >= channels * 2:
+            for i in range(channels):
+                val = data[i * 2] | (data[i * 2 + 1] << 8)
+                analog_in[start + i] = val
+            return
+    
+    for node_id, start, channels in io_map.get("counter", []):
+        if node_id == nid and len(data) >= channels * 4:
+            for i in range(channels):
+                off = i * 4
+                val = data[off] | (data[off+1] << 8) | (data[off+2] << 16) | (data[off+3] << 24)
+                counter[start + i] = val
+            return
+
+
+def encode_output_pdos(io_map):
+    """Encode output arrays into CAN PDO frames. Returns [(can_id, data), ...]."""
+    frames = []
+    
+    for node_id, start, channels in io_map.get("digital_out", []):
+        byte_val = 0
+        for bit in range(channels):
+            if digital_out[start + bit]:
+                byte_val |= (1 << bit)
+        frames.append((0x200 + node_id, bytes([byte_val])))
+    
+    for node_id, start, channels in io_map.get("analog_out", []):
+        data = bytearray(channels * 2)
+        for i in range(channels):
+            val = analog_out[start + i] & 0xFFFF
+            data[i * 2] = val & 0xFF
+            data[i * 2 + 1] = (val >> 8) & 0xFF
+        frames.append((0x200 + node_id, bytes(data)))
+    
+    return frames
+
+
+def read_inputs(can, io_map):
+    """Drain all pending CAN messages and decode PDOs into I/O arrays."""
+    while True:
+        msg = can.recv()
+        if msg is None:
+            break
+        msg_id = msg[0]
+        data = bytes(msg[1])
+        if 0x181 <= msg_id <= 0x1FF:
+            decode_pdo(msg_id, data, io_map)
+
+
+def write_outputs(can, io_map):
+    """Encode output arrays and send as CAN PDOs."""
+    frames = encode_output_pdos(io_map)
+    for can_id, data in frames:
+        can.send(can_id, data)
+
+
+def init_firmware(can, addressing_timeout_s=1.0, heartbeat_timeout_ms=1000):
+    """Run complete 6-phase firmware init. Returns io_map."""
+    modules = run_addressing(can, timeout_s=addressing_timeout_s)
+    if not modules:
+        print("[INIT] No modules found. Running with empty I/O map.")
+        return build_io_map([])
+    
+    detected = detect_modules(can, modules, heartbeat_timeout_ms=heartbeat_timeout_ms)
+    parametrize_modules(can, detected)
+    io_map = build_io_map(detected)
+    return io_map

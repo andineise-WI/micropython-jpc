@@ -104,6 +104,100 @@ def test_addressing_no_modules():
     assert modules == []
 
 
+# === Task 4: Module Detection ===
+
+def test_detect_modules_8di_8do():
+    can = MockCAN()
+    can._queue.append((0x701, b'\x05'))
+    can._queue.append((0x702, b'\x05'))
+    can._queue.append((0x581, bytes([0x43, 0x18, 0x10, 0x02, 0x01, 0x00, 0x00, 0x00])))
+    can._queue.append((0x581, bytes([0x43, 0x18, 0x10, 0x03, 0x06, 0x00, 0x01, 0x00])))
+    can._queue.append((0x582, bytes([0x43, 0x18, 0x10, 0x02, 0x05, 0x00, 0x00, 0x00])))
+    can._queue.append((0x582, bytes([0x43, 0x18, 0x10, 0x03, 0x0A, 0x00, 0x01, 0x00])))
+    detected = sai_runtime.detect_modules(can, [1, 2], heartbeat_timeout_ms=50)
+    assert len(detected) == 2
+    assert detected[0]["profile"]["name"] == "8DI"
+    assert detected[1]["profile"]["name"] == "8DO"
+
+
+# === Task 5: Parametrization ===
+
+def test_parametrize_8di():
+    can = MockCAN()
+    detected = [{"node_id": 1, "profile": sai_runtime.MODULE_PROFILES[(1, 0x00010006)]}]
+    for _ in range(3):
+        can._queue.append((0x581, bytes([0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])))
+    ok = sai_runtime.parametrize_modules(can, detected)
+    assert ok is True
+    # 3 SDO writes + 1 NMT = 4 sent messages
+    sdo_writes = [s for s in can._sent if s[0] == 0x601]
+    assert len(sdo_writes) == 3
+
+
+# === Task 6: I/O Map Builder ===
+
+def test_build_io_map_mixed():
+    detected = [
+        {"node_id": 1, "profile": sai_runtime.MODULE_PROFILES[(1, 0x00010006)]},
+        {"node_id": 2, "profile": sai_runtime.MODULE_PROFILES[(5, 0x0001000A)]},
+        {"node_id": 3, "profile": sai_runtime.MODULE_PROFILES[(2, 0x00010007)]},
+    ]
+    io_map = sai_runtime.build_io_map(detected)
+    assert len(sai_runtime.digital_in) == 17   # [None] + 8(8DI) + 8(8DIO in)
+    assert sai_runtime.digital_in[0] is None
+    assert sai_runtime.digital_in[1] == False
+    assert len(sai_runtime.digital_out) == 17  # [None] + 8(8DO) + 8(8DIO out)
+    assert "digital_in" in io_map
+    assert "digital_out" in io_map
+
+def test_build_io_map_empty():
+    detected = []
+    io_map = sai_runtime.build_io_map(detected)
+    assert len(sai_runtime.digital_in) == 1
+    assert len(sai_runtime.digital_out) == 1
+
+
+# === Task 7: PDO Decode/Encode ===
+
+def test_decode_pdo_digital_in():
+    sai_runtime.digital_in[:] = [None] + [False] * 8
+    io_map = {"digital_in": [(2, 1, 8)], "analog_in": [], "counter": []}
+    sai_runtime.decode_pdo(0x182, bytes([0x83]), io_map)
+    assert sai_runtime.digital_in[1] == True
+    assert sai_runtime.digital_in[2] == True
+    assert sai_runtime.digital_in[3] == False
+    assert sai_runtime.digital_in[8] == True
+
+def test_encode_pdo_digital_out():
+    sai_runtime.digital_out[:] = [None, True, False, True, False, False, False, False, True]
+    io_map = {"digital_out": [(1, 1, 8)], "analog_out": []}
+    frames = sai_runtime.encode_output_pdos(io_map)
+    assert len(frames) == 1
+    assert frames[0][0] == 0x201
+    assert frames[0][1][0] == 0x85  # 0b10000101
+
+
+# === Task 8: SPS Scan Helpers ===
+
+def test_read_inputs_decodes_pdo():
+    can = MockCAN()
+    sai_runtime.digital_in[:] = [None] + [False] * 8
+    io_map = {"digital_in": [(1, 1, 8)], "digital_out": [], "analog_in": [], "analog_out": [], "counter": []}
+    can._queue.append((0x181, bytes([0xFF])))
+    sai_runtime.read_inputs(can, io_map)
+    assert sai_runtime.digital_in[1] == True
+    assert sai_runtime.digital_in[8] == True
+
+def test_write_outputs_sends_pdo():
+    can = MockCAN()
+    sai_runtime.digital_out[:] = [None] + [True] * 8
+    io_map = {"digital_in": [], "digital_out": [(1, 1, 8)], "analog_in": [], "analog_out": [], "counter": []}
+    sai_runtime.write_outputs(can, io_map)
+    assert len(can._sent) == 1
+    assert can._sent[0][0] == 0x201
+    assert can._sent[0][1][0] == 0xFF
+
+
 passed = 0
 failed = 0
 
@@ -128,6 +222,14 @@ if __name__ == '__main__':
     run_test(test_sdo_download_1byte_timeout)
     run_test(test_addressing_two_modules)
     run_test(test_addressing_no_modules)
+    run_test(test_detect_modules_8di_8do)
+    run_test(test_parametrize_8di)
+    run_test(test_build_io_map_mixed)
+    run_test(test_build_io_map_empty)
+    run_test(test_decode_pdo_digital_in)
+    run_test(test_encode_pdo_digital_out)
+    run_test(test_read_inputs_decodes_pdo)
+    run_test(test_write_outputs_sends_pdo)
     print("\n{} passed, {} failed".format(passed, failed))
     if failed:
         sys.exit(1)
