@@ -14,7 +14,7 @@ class CANAdapter:
     def __init__(self, raw_can):
         self._can = raw_can
     def send(self, can_id, data):
-        self._can.send(data, can_id)
+        self._can.send(list(data), can_id)
     def recv(self):
         if self._can.any():
             msg = self._can.recv()
