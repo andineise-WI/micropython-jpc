@@ -48,6 +48,11 @@ def run():
 
     # Initialize CAN
     print("[MAIN] Initializing CAN at 250kbps...")
+    try:
+        # Deinit leftover driver from previous soft-reboot
+        CAN(0).deinit()
+    except:
+        pass
     raw_can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
     can = CANAdapter(raw_can)
     print("[MAIN] CAN state:", can.state())
