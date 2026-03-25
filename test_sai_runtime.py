@@ -91,17 +91,23 @@ def test_addressing_two_modules():
         (0x7FF, b'\x81'),  # Module 2 addr ACK
         (0x7FF, b'\x82'),  # Module 2 switch ACK
     ])
-    modules = sai_runtime.run_addressing(can, timeout_s=0.1)
+    modules = sai_runtime.run_addressing(can, timeout_s=0.1, start_without_bootup_s=0)
     assert modules == [1, 2]
     sent_ids = [s[0] for s in can._sent]
-    assert 0x000 in sent_ids
     assert 0x77F in sent_ids
     assert 0x7FE in sent_ids
 
 def test_addressing_no_modules():
     can = MockCAN()
-    modules = sai_runtime.run_addressing(can, timeout_s=0.1)
+    modules = sai_runtime.run_addressing(can, timeout_s=0.1, start_without_bootup_s=0)
     assert modules == []
+
+def test_addressing_starts_without_first_bootup():
+    can = MockCAN()
+    modules = sai_runtime.run_addressing(can, timeout_s=0.1, start_without_bootup_s=0)
+    assert modules == []
+    # Fallback must actively start addressing by sending 0x81 with node id 1.
+    assert (0x7FE, b'\x81\x01') in can._sent
 
 
 # === Task 4: Module Detection ===
@@ -294,6 +300,7 @@ if __name__ == '__main__':
     run_test(test_sdo_download_1byte_timeout)
     run_test(test_addressing_two_modules)
     run_test(test_addressing_no_modules)
+    run_test(test_addressing_starts_without_first_bootup)
     run_test(test_detect_modules_8di_8do)
     run_test(test_parametrize_8di)
     run_test(test_build_io_map_mixed)

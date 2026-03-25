@@ -80,7 +80,12 @@ def test_full_boot_sequence():
         (0x581, bytes([0x60, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00])),
     ]
 
-    io_map = sai_runtime.init_firmware(can, addressing_timeout_s=0.1, heartbeat_timeout_ms=50)
+    io_map = sai_runtime.init_firmware(
+        can,
+        addressing_timeout_s=0.1,
+        heartbeat_timeout_ms=50,
+        addressing_start_delay_s=0,
+    )
 
     assert io_map is not None
     assert len(sai_runtime.digital_in) == 9  # [None] + 8 DI channels
@@ -91,7 +96,12 @@ def test_full_boot_sequence():
 def test_boot_no_modules():
     """init_firmware with no modules produces empty I/O map."""
     can = MockCAN()
-    io_map = sai_runtime.init_firmware(can, addressing_timeout_s=0.1, heartbeat_timeout_ms=50)
+    io_map = sai_runtime.init_firmware(
+        can,
+        addressing_timeout_s=0.1,
+        heartbeat_timeout_ms=50,
+        addressing_start_delay_s=0,
+    )
     assert io_map is not None
     assert len(sai_runtime.digital_in) == 1  # only [None]
     assert len(sai_runtime.digital_out) == 1

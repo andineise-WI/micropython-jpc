@@ -16,14 +16,64 @@ except ImportError:
 
 class CANAdapter:
     """Wraps esp32.CAN to provide a unified send(id, data)/recv()->(id, data) API."""
-    def __init__(self, raw_can):
+    def __init__(self, raw_can, reinit_fn=None):
         self._can = raw_can
+        self._reinit_fn = reinit_fn
+
     def send(self, can_id, data):
         # machine.CAN supports keyword args; esp32.CAN expects (data, id)
+        data_bytes = bytes(data)
+
+        def _send_once():
+            try:
+                self._can.send(id=can_id, data=data_bytes)
+            except TypeError:
+                self._can.send(list(data_bytes), can_id)
+
         try:
-            self._can.send(id=can_id, data=bytes(data))
-        except TypeError:
-            self._can.send(list(data), can_id)
+            _send_once()
+            return
+        except RuntimeError as err:
+            state = self._can.state() if hasattr(self._can, 'state') else -1
+            print("[CAN] WARN: send failed (state={}), recovering...".format(state))
+            if self.recover(wait_ms=200):
+                _send_once()
+                return
+            raise err
+
+    def restart(self):
+        if hasattr(self._can, 'restart'):
+            self._can.restart()
+
+    def recover(self, wait_ms=100):
+        """Try restart, then full reinit if available. Returns True if state==1."""
+        if hasattr(self._can, 'restart'):
+            try:
+                self._can.restart()
+            except Exception:
+                pass
+        if wait_ms:
+            time.sleep_ms(wait_ms)
+
+        if hasattr(self._can, 'state') and self._can.state() == 1:
+            return True
+
+        if self._reinit_fn is not None:
+            try:
+                if hasattr(self._can, 'deinit'):
+                    self._can.deinit()
+            except Exception:
+                pass
+            try:
+                self._can = self._reinit_fn()
+            except Exception:
+                return False
+            if wait_ms:
+                time.sleep_ms(wait_ms)
+            return (not hasattr(self._can, 'state')) or (self._can.state() == 1)
+
+        return False
+
     def recv(self):
         if hasattr(self._can, "any") and not self._can.any():
             return None
@@ -44,13 +94,17 @@ def _init_can():
     """Create CAN instance across both firmware variants."""
     if MACHINE_CAN is not None:
         # extmod machine_can.c: CAN index is 1-based and only bitrate is configured.
-        raw_can = MACHINE_CAN(1, bitrate=250000)
-        return CANAdapter(raw_can)
+        def _mk_machine_can():
+            return MACHINE_CAN(1, bitrate=250000)
+        raw_can = _mk_machine_can()
+        return CANAdapter(raw_can, reinit_fn=_mk_machine_can)
 
     if ESP32_CAN is not None:
         try:
-            raw_can = ESP32_CAN(0, tx=5, rx=4, mode=ESP32_CAN.NORMAL, baudrate=250000)
-            return CANAdapter(raw_can)
+            def _mk_esp32_can():
+                return ESP32_CAN(0, tx=5, rx=4, mode=ESP32_CAN.NORMAL, baudrate=250000)
+            raw_can = _mk_esp32_can()
+            return CANAdapter(raw_can, reinit_fn=_mk_esp32_can)
         except OSError:
             # TWAI driver still active from previous soft reboot; force hard reset.
             import machine as _machine

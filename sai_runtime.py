@@ -105,77 +105,189 @@ def sdo_download_1byte(can, node_id, index, subindex, value, timeout_ms=500):
     return False
 
 
-def run_addressing(can, timeout_s=1.0):
+def run_addressing(can, timeout_s=1.0, start_without_bootup_s=2.0):
     """Phase 1+2: Auto-address SAI modules and start applications.
     
-    Returns list of assigned node IDs [1, 2, ...].
+        State machine:
+            0 = Wait for first bootup (0x01) or timeout fallback
+            1 = Send address assignment (0x81, module_id)
+            2 = Wait for address ACK (0x81)
+            3 = Send enable command (0x82, module_id)
+            4 = Wait for enable ACK (0x82)
+            5 = Module complete, wait for next bootup or timeout
+    
+        Returns list of assigned node IDs [1, 2, ...].
     """
-    print("[ADDR] Phase 1: NMT Reset...")
-    send_nmt(can, 0x81, 0x00)
-    time.sleep_ms(500)
-    
-    addr_step = 0
-    module_count = 1
+    print("[ADDR] Phase 1: Wait for first bootup or start after {}s...".format(start_without_bootup_s))
     modules = []
+    module_count = 1
+    addr_step = 0
+    retry_count = 0
+    MAX_RETRIES = 10  # max ~10s of retrying after initial 2s wait
+
+    start_deadline = time.ticks_add(time.ticks_ms(), int(start_without_bootup_s * 1000))
     last_activity = time.ticks_ms()
+    last_send = time.ticks_ms()
     timeout_ms = int(timeout_s * 1000)
-    
+    started = False
+
     while True:
+        now = time.ticks_ms()
         msg = can.recv()
+
         if msg is not None:
             msg_id = msg[0]
             data = bytes(msg[1])
-            
-            if addr_step == 0:
-                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
-                    print("[ADDR] Bootup from module #{}".format(module_count))
-                    addr_step = 1
-            
-            if addr_step == 1:
+            last_activity = now
+
+            # Step 0: Waiting for first bootup
+            if addr_step == 0 and msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
+                print("[ADDR] Bootup from module #{}".format(module_count))
+                addr_step = 1
+                continue
+
+            # Step 2: Waiting for address ACK (0x81)
+            if addr_step == 2 and msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x81:
+                print("[ADDR] Address ACK for module #{}".format(module_count))
+                retry_count = 0
+                addr_step = 3
+                continue
+
+            # Step 2: Late bootup while waiting for ACK → re-trigger address send
+            if addr_step == 2 and msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
+                print("[ADDR] Late bootup for module #{}, retrying assign".format(module_count))
+                addr_step = 1
+                continue
+
+            # Step 4: Waiting for enable ACK (0x82)
+            if addr_step == 4 and msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x82:
+                print("[ADDR] Enable ACK for module #{}".format(module_count))
+                modules.append(module_count)
+                module_count += 1
+                retry_count = 0
+                addr_step = 5
+                continue
+
+            # Step 5: Waiting for next bootup after successful addressing
+            if addr_step == 5 and msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
+                print("[ADDR] Bootup from module #{}".format(module_count))
+                addr_step = 1
+                continue
+
+        # Fallback timeout: if no bootup after start_without_bootup_s, start anyway
+        if addr_step == 0 and not started and time.ticks_diff(now, start_deadline) >= 0:
+            print("[ADDR] No initial bootup seen, starting addressing fallback")
+            addr_step = 1
+            started = True
+
+        # Step 1: Send address assignment (0x81, module_count)
+        if addr_step == 1:
+            if hasattr(can, 'state') and can.state() != 1:
+                print("[ADDR] WARN: CAN state {} not ready before assign #{}".format(can.state(), module_count))
+                if hasattr(can, 'recover'):
+                    can.recover(wait_ms=200)
+                elif hasattr(can, 'restart'):
+                    try:
+                        can.restart()
+                    except Exception:
+                        pass
+                addr_step = 0
+                start_deadline = time.ticks_add(now, 1000)
+                started = False
+                continue
+            print("[ADDR] -> Send assign #{}".format(module_count))
+            try:
                 can.send(BOOTLOADER_TX, bytes([0x81, module_count]))
-                addr_step = 2
+            except RuntimeError:
+                # CAN controller not ready (eg bus-off). Retry assign on next poll.
+                print("[ADDR] WARN: CAN not ready while sending assign #{}".format(module_count))
+                addr_step = 0
+                start_deadline = time.ticks_add(now, 1000)
+                started = False
                 continue
-            
-            if addr_step == 2:
-                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x81:
-                    addr_step = 3
-            
-            if addr_step == 3:
+            addr_step = 2
+            started = True
+            last_activity = now
+            last_send = now
+            continue
+
+        # Step 3: Send enable command (0x82, module_count)
+        if addr_step == 3:
+            if hasattr(can, 'state') and can.state() != 1:
+                print("[ADDR] WARN: CAN state {} not ready before enable #{}".format(can.state(), module_count))
+                if hasattr(can, 'recover'):
+                    can.recover(wait_ms=200)
+                elif hasattr(can, 'restart'):
+                    try:
+                        can.restart()
+                    except Exception:
+                        pass
+                addr_step = 0
+                start_deadline = time.ticks_add(now, 1000)
+                started = False
+                continue
+            print("[ADDR] -> Send enable #{}".format(module_count))
+            try:
                 can.send(BOOTLOADER_TX, bytes([0x82, module_count]))
-                addr_step = 4
+            except RuntimeError:
+                # If enable send fails, go back to polling for module bootup/assign.
+                print("[ADDR] WARN: CAN not ready while sending enable #{}".format(module_count))
+                addr_step = 0
+                start_deadline = time.ticks_add(now, 1000)
+                started = False
                 continue
-            
-            if addr_step == 4:
-                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x82:
-                    modules.append(module_count)
-                    module_count += 1
-                    last_activity = time.ticks_ms()
-                    addr_step = 5
-            
-            if addr_step == 5:
-                if msg_id == BOOTLOADER_RX and len(data) > 0 and data[0] == 0x01:
+            addr_step = 4
+            last_activity = now
+            last_send = now
+            continue
+
+        # ACK timeout handling.
+        if addr_step in (2, 4) and time.ticks_diff(now, last_send) > timeout_ms:
+            if retry_count < MAX_RETRIES:
+                retry_count += 1
+                if addr_step == 2:
+                    print("[ADDR] No ACK (step 2, retry {}/{}), retrying assign...".format(retry_count, MAX_RETRIES))
                     addr_step = 1
-                    can.send(BOOTLOADER_TX, bytes([0x81, module_count]))
-                    addr_step = 2
-                    continue
-        else:
-            time.sleep_ms(1)
-        
-        # Timeout: no more modules
-        if addr_step == 5 and time.ticks_diff(time.ticks_ms(), last_activity) > timeout_ms:
+                else:
+                    # Step 4 timeout: don't spam enable, return to polling/assign path.
+                    print("[ADDR] No ACK (step 4, retry {}/{}), restart assign flow...".format(retry_count, MAX_RETRIES))
+                    addr_step = 0
+                    start_deadline = time.ticks_add(now, 1000)
+                    started = False
+            else:
+                print("[ADDR] WARN: No ACK for module #{} after {} retries, aborting".format(module_count, MAX_RETRIES))
+                break
+
+        # Step 5: Wait for next module bootup or timeout
+        if addr_step == 5 and time.ticks_diff(now, last_activity) > timeout_ms:
+            print("[ADDR] Timeout waiting for next module, addressing complete")
             break
-        if addr_step == 0 and time.ticks_diff(time.ticks_ms(), last_activity) > timeout_ms:
-            break
-    
+
+        time.sleep_ms(1)
+
+    # Drain RX buffer and let bus settle before Phase 2
+    time.sleep_ms(50)
+    while can.recv() is not None:
+        pass
+
     # Phase 2: App-Start
     if modules:
         print("[ADDR] Phase 2: Starting {} module(s)...".format(len(modules)))
-        can.send(APP_START_BROADCAST, bytes([0x7F]))
+        try:
+            can.send(APP_START_BROADCAST, bytes([0x7F]))
+        except RuntimeError:
+            print("[ADDR] WARN: CAN not ready for first app-start broadcast")
         time.sleep_ms(10)
         for nid in modules:
-            can.send(BOOTLOADER_TX, bytes([0x83, nid]))
+            try:
+                can.send(BOOTLOADER_TX, bytes([0x83, nid]))
+            except RuntimeError:
+                print("[ADDR] WARN: CAN not ready for start-app node {}".format(nid))
             time.sleep_ms(10)
-        can.send(APP_START_BROADCAST, bytes([0x7F]))
+        try:
+            can.send(APP_START_BROADCAST, bytes([0x7F]))
+        except RuntimeError:
+            print("[ADDR] WARN: CAN not ready for second app-start broadcast")
         time.sleep_ms(500)
     
     print("[ADDR] Complete: {} modules -> {}".format(len(modules), modules))
@@ -383,9 +495,13 @@ def write_outputs(can, io_map):
         can.send(can_id, data)
 
 
-def init_firmware(can, addressing_timeout_s=1.0, heartbeat_timeout_ms=1000):
+def init_firmware(can, addressing_timeout_s=1.0, heartbeat_timeout_ms=1000, addressing_start_delay_s=2.0):
     """Run complete 6-phase firmware init. Returns io_map."""
-    modules = run_addressing(can, timeout_s=addressing_timeout_s)
+    modules = run_addressing(
+        can,
+        timeout_s=addressing_timeout_s,
+        start_without_bootup_s=addressing_start_delay_s,
+    )
     if not modules:
         print("[INIT] No modules found. Running with empty I/O map.")
         return build_io_map([])
