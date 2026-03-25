@@ -4,9 +4,14 @@ import time
 import sai_runtime
 
 try:
-    from esp32 import CAN
+    from machine import CAN as MACHINE_CAN
 except ImportError:
-    CAN = None
+    MACHINE_CAN = None
+
+try:
+    from esp32 import CAN as ESP32_CAN
+except ImportError:
+    ESP32_CAN = None
 
 
 class CANAdapter:
@@ -14,14 +19,45 @@ class CANAdapter:
     def __init__(self, raw_can):
         self._can = raw_can
     def send(self, can_id, data):
-        self._can.send(list(data), can_id)
+        # machine.CAN supports keyword args; esp32.CAN expects (data, id)
+        try:
+            self._can.send(id=can_id, data=bytes(data))
+        except TypeError:
+            self._can.send(list(data), can_id)
     def recv(self):
-        if self._can.any():
-            msg = self._can.recv()
+        if hasattr(self._can, "any") and not self._can.any():
+            return None
+        msg = self._can.recv()
+        if msg is None:
+            return None
+        # machine.CAN returns (id, data), esp32.CAN returns tuple with payload at index 3
+        if len(msg) >= 4:
             return (int(msg[0]), bytes(msg[3]))
+        if len(msg) >= 2:
+            return (int(msg[0]), bytes(msg[1]))
         return None
     def state(self):
         return self._can.state()
+
+
+def _init_can():
+    """Create CAN instance across both firmware variants."""
+    if MACHINE_CAN is not None:
+        # extmod machine_can.c: CAN index is 1-based and only bitrate is configured.
+        raw_can = MACHINE_CAN(1, bitrate=250000)
+        return CANAdapter(raw_can)
+
+    if ESP32_CAN is not None:
+        try:
+            raw_can = ESP32_CAN(0, tx=5, rx=4, mode=ESP32_CAN.NORMAL, baudrate=250000)
+            return CANAdapter(raw_can)
+        except OSError:
+            # TWAI driver still active from previous soft reboot; force hard reset.
+            import machine as _machine
+            print("[MAIN] CAN driver busy, hard reset...")
+            _machine.reset()
+
+    raise RuntimeError("No CAN implementation available")
 
 
 def load_user_program():
@@ -48,14 +84,7 @@ def run():
 
     # Initialize CAN
     print("[MAIN] Initializing CAN at 250kbps...")
-    try:
-        raw_can = CAN(0, tx=5, rx=4, mode=CAN.NORMAL, baudrate=250000)
-    except OSError:
-        # TWAI driver still active from previous soft-reboot -> hard reset
-        import machine as _machine
-        print("[MAIN] CAN driver busy, hard reset...")
-        _machine.reset()
-    can = CANAdapter(raw_can)
+    can = _init_can()
     print("[MAIN] CAN state:", can.state())
 
     # Phase 1-6: Firmware init
