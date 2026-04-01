@@ -37,6 +37,10 @@
 #include "esp_clk_tree.h"
 #include "soc/soc_caps.h"
 
+#if defined(MICROPY_BOARD_JACKPACK_SAI)
+#include "sai_addressing.h"
+#endif
+
 // TWAI timing limits (SJA1000-compatible controller)
 #define CAN_BRP_MIN 2
 #define CAN_BRP_MAX 128
@@ -89,6 +93,21 @@ static void machine_can_port_init(machine_can_obj_t *self) {
         memset(self->port, 0, sizeof(struct machine_can_port));
         self->port->filter_config = (twai_filter_config_t)TWAI_FILTER_CONFIG_ACCEPT_ALL();
     }
+
+    // If SAI early addressing left TWAI installed, take over without reinstalling.
+    #if defined(MICROPY_BOARD_JACKPACK_SAI)
+    if (sai_addressing_result.twai_installed && !self->port->installed) {
+        self->port->installed = true;
+        sai_addressing_result.twai_installed = false;  // Handoff complete.
+
+        // Drain any leftover messages from the addressing phase.
+        twai_message_t drain_msg;
+        while (twai_receive(&drain_msg, 0) == ESP_OK) {
+            // discard
+        }
+        return;
+    }
+    #endif
 
     // If already installed, stop and uninstall first
     if (self->port->installed) {
