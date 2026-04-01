@@ -42,6 +42,10 @@ typedef struct {
     uint8_t node_ids[SAI_MAX_NODES];    // Assigned node IDs (1-based).
     bool addressing_done;               // true once addressing has completed.
     bool twai_installed;                // true if TWAI driver is still running.
+    // Debug / diagnostics fields.
+    uint8_t last_state;                 // Last state machine state (0-6).
+    uint32_t elapsed_ms;                // Total addressing duration in ms.
+    uint16_t error_count;               // TX failures + ACK timeouts.
 } sai_addressing_result_t;
 
 // Global result, written by sai_early_addressing(), read by Python.

@@ -33,6 +33,9 @@ sai_addressing_result_t sai_addressing_result = {
     .node_ids = {0},
     .addressing_done = false,
     .twai_installed = false,
+    .last_state = 0,
+    .elapsed_ms = 0,
+    .error_count = 0,
 };
 
 // GPIO pins for CAN transceiver (ESP32-PICO-V3-02 JackPack hardware).
@@ -134,6 +137,7 @@ void sai_early_addressing(void) {
     TickType_t start_tick = xTaskGetTickCount();
     TickType_t last_activity = start_tick;
     twai_message_t rx_msg;
+    uint16_t errors = 0;
 
     ESP_LOGI(TAG, "Waiting for SAI module bootup messages...");
 
@@ -167,6 +171,7 @@ void sai_early_addressing(void) {
                 last_activity = xTaskGetTickCount();
                 state = 2;
             } else {
+                errors++;
                 // TX failed, retry next loop.
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
@@ -194,6 +199,7 @@ void sai_early_addressing(void) {
                 }
             } else {
                 // ACK timeout — retry assign.
+                errors++;
                 ESP_LOGW(TAG, "No ACK (assign) for #%d, retrying", module_cnt);
                 state = 1;
             }
@@ -207,6 +213,7 @@ void sai_early_addressing(void) {
                 last_activity = xTaskGetTickCount();
                 state = 4;
             } else {
+                errors++;
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
             continue;
@@ -232,6 +239,7 @@ void sai_early_addressing(void) {
                 }
             } else {
                 // ACK timeout — go back to assign (module may have missed switch-on).
+                errors++;
                 ESP_LOGW(TAG, "No ACK (switch-on) for #%d, retrying assign", module_cnt);
                 state = 1;
             }
@@ -288,12 +296,17 @@ void sai_early_addressing(void) {
     }
 
     sai_addressing_result.addressing_done = true;
+    sai_addressing_result.last_state = state;
+    sai_addressing_result.elapsed_ms = (xTaskGetTickCount() - start_tick) * portTICK_PERIOD_MS;
+    sai_addressing_result.error_count = errors;
 
-    ESP_LOGI(TAG, "Addressing complete: %d module(s) [", sai_addressing_result.count);
+    ESP_LOGI(TAG, "Addressing complete: %d module(s), %lu ms, %d errors",
+             sai_addressing_result.count,
+             (unsigned long)sai_addressing_result.elapsed_ms,
+             errors);
     for (int i = 0; i < sai_addressing_result.count; i++) {
         ESP_LOGI(TAG, "  Node %d", sai_addressing_result.node_ids[i]);
     }
-    ESP_LOGI(TAG, "]");
 
     // TWAI stays installed — machine.CAN will take over.
 }
