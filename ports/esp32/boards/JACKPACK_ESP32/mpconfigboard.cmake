@@ -1,5 +1,7 @@
 set(SDKCONFIG_DEFAULTS
     boards/sdkconfig.base
+    boards/sdkconfig.flash_8MiB
+    boards/sdkconfig.spiram
 )
 
 set(MICROPY_SOURCE_BOARD

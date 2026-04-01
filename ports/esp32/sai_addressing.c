@@ -134,6 +134,7 @@ void sai_early_addressing(void) {
 
     int state = 0;
     uint8_t module_cnt = 1;
+    int assign_retries = 0;
     TickType_t start_tick = xTaskGetTickCount();
     TickType_t last_activity = start_tick;
     twai_message_t rx_msg;
@@ -150,7 +151,7 @@ void sai_early_addressing(void) {
             break;
         }
 
-        // State 0: Wait for first bootup.
+        // State 0: Wait up to SAI_INITIAL_WAIT_MS for first bootup.
         if (state == 0) {
             if (sai_recv(&rx_msg, 50)) {
                 if (rx_msg.identifier == SAI_BOOTLOADER_RX &&
@@ -160,19 +161,33 @@ void sai_early_addressing(void) {
                     last_activity = xTaskGetTickCount();
                     state = 1;
                 }
+            } else {
+                // No message — check if initial wait period has elapsed.
+                if ((now - start_tick) > pdMS_TO_TICKS(SAI_INITIAL_WAIT_MS)) {
+                    ESP_LOGI(TAG, "No bootup after %d ms, assigning address directly", SAI_INITIAL_WAIT_MS);
+                    last_activity = xTaskGetTickCount();
+                    state = 1;
+                }
             }
             continue;
         }
 
         // State 1: Send assign address command.
         if (state == 1) {
-            ESP_LOGI(TAG, "-> Assign address #%d", module_cnt);
+            if (assign_retries >= SAI_MAX_ASSIGN_RETRIES) {
+                ESP_LOGW(TAG, "No response after %d assign attempts for #%d, giving up",
+                         SAI_MAX_ASSIGN_RETRIES, module_cnt);
+                break;
+            }
+            ESP_LOGI(TAG, "-> Assign address #%d (attempt %d/%d)",
+                     module_cnt, assign_retries + 1, SAI_MAX_ASSIGN_RETRIES);
             if (sai_send_cmd(SAI_CMD_ASSIGN_ADDR, module_cnt)) {
                 last_activity = xTaskGetTickCount();
+                assign_retries++;
                 state = 2;
             } else {
                 errors++;
-                // TX failed, retry next loop.
+                assign_retries++;
                 vTaskDelay(pdMS_TO_TICKS(10));
             }
             continue;
@@ -200,7 +215,8 @@ void sai_early_addressing(void) {
             } else {
                 // ACK timeout — retry assign.
                 errors++;
-                ESP_LOGW(TAG, "No ACK (assign) for #%d, retrying", module_cnt);
+                ESP_LOGW(TAG, "No ACK (assign) for #%d, retry %d/%d",
+                         module_cnt, assign_retries, SAI_MAX_ASSIGN_RETRIES);
                 state = 1;
             }
             continue;
@@ -233,6 +249,7 @@ void sai_early_addressing(void) {
                         sai_addressing_result.count++;
                     }
                     module_cnt++;
+                    assign_retries = 0;
                     last_activity = xTaskGetTickCount();
                     state = 5;
                     continue;

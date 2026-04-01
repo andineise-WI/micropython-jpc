@@ -29,11 +29,17 @@
 #define SAI_CMD_APP_START       0x83
 #define SAI_CMD_APP_START_BC    0x7F
 
+// Timeout: initial wait for first bootup message (ms).
+#define SAI_INITIAL_WAIT_MS     2000
+
 // Timeout: silence period to declare addressing complete (ms).
 #define SAI_SILENCE_TIMEOUT_MS  1000
 
 // Timeout: maximum total addressing duration as safety net (ms).
-#define SAI_TOTAL_TIMEOUT_MS    5000
+#define SAI_TOTAL_TIMEOUT_MS    10000
+
+// Maximum assign retries per module before giving up.
+#define SAI_MAX_ASSIGN_RETRIES  3
 
 // Result of the early addressing phase, filled by C code,
 // read by Python via the sai module.
