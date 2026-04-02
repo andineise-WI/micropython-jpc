@@ -109,6 +109,35 @@ static bool sai_recv(twai_message_t *out_msg, uint32_t timeout_ms) {
     return (err == ESP_OK);
 }
 
+// Wait for app-start response: 0x7FF [0x83, Addr, status].
+static void sai_wait_app_start_ack(uint8_t node_id, uint16_t *errors) {
+    twai_message_t rx_msg;
+    TickType_t deadline = xTaskGetTickCount() + pdMS_TO_TICKS(150);
+
+    while (xTaskGetTickCount() < deadline) {
+        if (!sai_recv(&rx_msg, 20)) {
+            continue;
+        }
+
+        if (rx_msg.identifier != SAI_BOOTLOADER_RX || rx_msg.data_length_code < 3) {
+            continue;
+        }
+
+        if (rx_msg.data[0] == SAI_CMD_APP_START && rx_msg.data[1] == node_id) {
+            if (rx_msg.data[2] == 0x00) {
+                ESP_LOGI(TAG, "App-start ACK OK for #%d", node_id);
+            } else {
+                (*errors)++;
+                ESP_LOGW(TAG, "App-start ACK error for #%d code=0x%02X", node_id, rx_msg.data[2]);
+            }
+            return;
+        }
+    }
+
+    (*errors)++;
+    ESP_LOGW(TAG, "No app-start ACK for #%d", node_id);
+}
+
 // --- Main addressing state machine ---
 
 // State definitions matching the Python reference:
@@ -197,11 +226,16 @@ void sai_early_addressing(void) {
         if (state == 2) {
             if (sai_recv(&rx_msg, 100)) {
                 if (rx_msg.identifier == SAI_BOOTLOADER_RX &&
-                    rx_msg.data_length_code >= 1) {
-                    if (rx_msg.data[0] == SAI_CMD_ASSIGN_ADDR) {
+                    rx_msg.data_length_code >= 2) {
+                    if (rx_msg.data[0] == SAI_CMD_ASSIGN_ADDR && rx_msg.data[1] == module_cnt) {
                         ESP_LOGI(TAG, "Address ACK for #%d", module_cnt);
                         last_activity = xTaskGetTickCount();
                         state = 3;
+                        continue;
+                    }
+                    if (rx_msg.data[0] == SAI_CMD_ASSIGN_ADDR) {
+                        ESP_LOGW(TAG, "Address ACK for wrong node: got=%d expected=%d",
+                                 rx_msg.data[1], module_cnt);
                         continue;
                     }
                     // Late bootup while waiting for ACK → retry assign.
@@ -239,8 +273,9 @@ void sai_early_addressing(void) {
         if (state == 4) {
             if (sai_recv(&rx_msg, 100)) {
                 if (rx_msg.identifier == SAI_BOOTLOADER_RX &&
-                    rx_msg.data_length_code >= 1 &&
-                    rx_msg.data[0] == SAI_CMD_SWITCH_ON) {
+                    rx_msg.data_length_code >= 2 &&
+                    rx_msg.data[0] == SAI_CMD_SWITCH_ON &&
+                    rx_msg.data[1] == module_cnt) {
                     ESP_LOGI(TAG, "Switch-on ACK for #%d", module_cnt);
 
                     // Store this module.
@@ -253,6 +288,12 @@ void sai_early_addressing(void) {
                     last_activity = xTaskGetTickCount();
                     state = 5;
                     continue;
+                }
+                if (rx_msg.identifier == SAI_BOOTLOADER_RX &&
+                    rx_msg.data_length_code >= 2 &&
+                    rx_msg.data[0] == SAI_CMD_SWITCH_ON) {
+                    ESP_LOGW(TAG, "Switch-on ACK for wrong node: got=%d expected=%d",
+                             rx_msg.data[1], module_cnt);
                 }
             } else {
                 // ACK timeout — go back to assign (module may have missed switch-on).
@@ -298,7 +339,9 @@ void sai_early_addressing(void) {
 
         // Per-module app-start.
         for (int i = 0; i < sai_addressing_result.count; i++) {
-            sai_send_cmd(SAI_CMD_APP_START, sai_addressing_result.node_ids[i]);
+            uint8_t node_id = sai_addressing_result.node_ids[i];
+            sai_send_cmd(SAI_CMD_APP_START, node_id);
+            sai_wait_app_start_ack(node_id, &errors);
             vTaskDelay(pdMS_TO_TICKS(10));
         }
 
