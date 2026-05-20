@@ -75,4 +75,4 @@ Das CAN Auto-Addressing für SAI-Module soll so früh wie möglich im ESP32-Boot
 
 **Freigabe:**
 - [x] User bestätigt Design
-- [ ] Plan schreiben
+- [x] Plan schreiben

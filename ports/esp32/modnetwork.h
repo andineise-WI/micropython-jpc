@@ -29,8 +29,8 @@
 #include "esp_wifi_types.h"
 #include "esp_netif.h"
 
-// lan867x component requires Original ESP32
-#if CONFIG_IDF_TARGET_ESP32
+// lan867x component requires Original ESP32 and can be disabled per-board.
+#if CONFIG_IDF_TARGET_ESP32 && !(defined(MICROPY_HW_ETH_LAN867X) && MICROPY_HW_ETH_LAN867X == 0)
 #define PHY_LAN867X_ENABLED (1)
 #else
 #define PHY_LAN867X_ENABLED (0)

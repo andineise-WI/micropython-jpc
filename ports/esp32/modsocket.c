@@ -62,7 +62,7 @@
 #define MDNS_QUERY_TIMEOUT_MS (5000)
 #define MDNS_LOCAL_SUFFIX ".local"
 
-#ifndef NO_QSTR
+#if MICROPY_HW_ENABLE_MDNS_QUERIES && !defined(NO_QSTR)
 #include "mdns.h"
 #endif
 

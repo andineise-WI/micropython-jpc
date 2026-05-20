@@ -22,6 +22,7 @@
 #include "freertos/task.h"
 #include "driver/twai.h"
 #include "esp_log.h"
+#include "esp_timer.h"
 
 #include "sai_addressing.h"
 
@@ -150,8 +151,10 @@ static void sai_wait_app_start_ack(uint8_t node_id, uint16_t *errors) {
 //   6 = addressing complete, run app-start
 
 void sai_early_addressing(void) {
-    ESP_LOGI(TAG, "Starting early CAN addressing (GPIO TX=%d RX=%d)",
-             SAI_CAN_TX_GPIO, SAI_CAN_RX_GPIO);
+    // Log time since boot to measure how fast we reach TWAI init.
+    int64_t t0_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "Starting early CAN addressing @ %lld us after boot (GPIO TX=%d RX=%d)",
+             (long long)t0_us, SAI_CAN_TX_GPIO, SAI_CAN_RX_GPIO);
 
     // Initialize TWAI driver.
     if (sai_twai_init() != ESP_OK) {
@@ -159,6 +162,9 @@ void sai_early_addressing(void) {
         sai_addressing_result.addressing_done = true;
         return;
     }
+    int64_t t1_us = esp_timer_get_time();
+    ESP_LOGI(TAG, "TWAI ready @ %lld us after boot (init took %lld us)",
+             (long long)t1_us, (long long)(t1_us - t0_us));
     sai_addressing_result.twai_installed = true;
 
     int state = 0;
@@ -176,8 +182,17 @@ void sai_early_addressing(void) {
 
         // Safety net: total timeout.
         if ((now - start_tick) > pdMS_TO_TICKS(SAI_TOTAL_TIMEOUT_MS)) {
-            ESP_LOGW(TAG, "Total timeout (%d ms), ending addressing", SAI_TOTAL_TIMEOUT_MS);
-            break;
+            if (sai_addressing_result.count > 0) {
+                ESP_LOGW(TAG, "Total timeout (%d ms), ending addressing", SAI_TOTAL_TIMEOUT_MS);
+                break;
+            }
+            // No module found yet — reset and keep waiting.
+            ESP_LOGW(TAG, "Total timeout but no module found yet, restarting wait...");
+            start_tick = now;
+            last_activity = now;
+            state = 0;
+            assign_retries = 0;
+            continue;
         }
 
         // State 0: Wait up to SAI_INITIAL_WAIT_MS for first bootup.
@@ -202,11 +217,18 @@ void sai_early_addressing(void) {
         }
 
         // State 1: Send assign address command.
+        //   When no module has been addressed yet, keep probing periodically.
         if (state == 1) {
             if (assign_retries >= SAI_MAX_ASSIGN_RETRIES) {
-                ESP_LOGW(TAG, "No response after %d assign attempts for #%d, giving up",
-                         SAI_MAX_ASSIGN_RETRIES, module_cnt);
-                break;
+                if (sai_addressing_result.count > 0) {
+                    ESP_LOGW(TAG, "No response after %d assign attempts for #%d, giving up",
+                             SAI_MAX_ASSIGN_RETRIES, module_cnt);
+                    break;
+                }
+                // No module found yet — wait 500ms then keep probing.
+                assign_retries = 0;
+                vTaskDelay(pdMS_TO_TICKS(500));
+                continue;
             }
             ESP_LOGI(TAG, "-> Assign address #%d (attempt %d/%d)",
                      module_cnt, assign_retries + 1, SAI_MAX_ASSIGN_RETRIES);

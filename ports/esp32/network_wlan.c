@@ -43,7 +43,7 @@
 #include "esp_log.h"
 #include "esp_psram.h"
 
-#ifndef NO_QSTR
+#if (MICROPY_HW_ENABLE_MDNS_QUERIES || MICROPY_HW_ENABLE_MDNS_RESPONDER) && !defined(NO_QSTR)
 #include "mdns.h"
 #endif
 

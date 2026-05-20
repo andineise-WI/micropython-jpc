@@ -7,6 +7,14 @@
 // Disable Bluetooth (not needed, CAN-only board).
 #define MICROPY_PY_BLUETOOTH                (0)
 
+// Disable Ethernet LAN867x PHY (not needed, CAN-only board).
+// Avoids dependency on espressif__lan867x managed component.
+#define MICROPY_HW_ETH_LAN867X             (0)
+
+// Disable mDNS (not needed, avoids espressif__mdns dependency).
+#define MICROPY_HW_ENABLE_MDNS_QUERIES     (0)
+#define MICROPY_HW_ENABLE_MDNS_RESPONDER   (0)
+
 // Flag for conditional SAI code in shared files (e.g. machine_can.c).
 #define MICROPY_BOARD_JACKPACK_SAI          (1)
 
